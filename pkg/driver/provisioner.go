@@ -123,12 +123,6 @@ func (s *ProvisionerServer) DriverCreateBucket(ctx context.Context, req *cosi.Dr
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "resolving backend: %v", err)
 	}
-	// A fronteira de tenancy do backend, verbatim (ver Backend.Prefix). O
-	// nome prefixado segue no BucketId, portanto delete/grant/revoke não
-	// precisam de saber que o prefixo existe.
-	if be.Prefix != "" {
-		name = be.Prefix + name
-	}
 	exists, err := be.MC.BucketExists(ctx, name)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "checking bucket %q: %v", name, err)

@@ -17,13 +17,13 @@ type Backend struct {
 	Adm        *madmin.AdminClient
 	S3Endpoint string
 	Region     string
-	// Prefix is prepended VERBATIM to every bucket name created through this
-	// backend (separator included by whoever set it, e.g. "kz-eu-"). It is
-	// the tenancy boundary of the local-COSI model: the provider decides it
-	// in the connection secret it delivers, the MinIO service-account policy
-	// is cut to the same prefix, and no consumer-side convention is needed.
-	Prefix string
 }
+
+// NOTA de desenho: já aqui viveu um Prefix de tenancy aplicado pelo driver.
+// Saiu de propósito: prefixo imposto pelo CONSUMIDOR é tenancy por cortesia.
+// A fronteira de tenant é do SERVIDOR — ver a proposta CreateTenantAccount no
+// fork do MinIO: a identidade entregue ao consumer já vem presa ao namespace
+// dela, e este driver não sabe (nem deve saber) que a tenancy existe.
 
 // COSI parameter conventions stamped by the (forked) objectstorage-sidecar:
 // the namespaces of the originating BucketClaim/BucketAccess. Generic

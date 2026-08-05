@@ -96,10 +96,7 @@ func (c *Connections) backendFor(ctx context.Context, ref string) (*Backend, err
 	if err != nil {
 		return nil, fmt.Errorf("connection %s s3 client: %w", ref, err)
 	}
-	// bucketPrefix no secret = a fronteira de tenancy decidida pelo PROVIDER
-	// na entrega da subscrição; ver Backend.Prefix.
-	b := &Backend{MC: mc, Adm: adm, S3Endpoint: endpoint,
-		Prefix: string(sec.Data["bucketPrefix"])}
+	b := &Backend{MC: mc, Adm: adm, S3Endpoint: endpoint}
 	c.mu.Lock()
 	if c.cache == nil {
 		c.cache = map[string]*Backend{}
