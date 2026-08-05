@@ -17,6 +17,12 @@ type Backend struct {
 	Adm        *madmin.AdminClient
 	S3Endpoint string
 	Region     string
+	// Prefix is prepended VERBATIM to every bucket name created through this
+	// backend (separator included by whoever set it, e.g. "kz-eu-"). It is
+	// the tenancy boundary of the local-COSI model: the provider decides it
+	// in the connection secret it delivers, the MinIO service-account policy
+	// is cut to the same prefix, and no consumer-side convention is needed.
+	Prefix string
 }
 
 // COSI parameter conventions stamped by the (forked) objectstorage-sidecar:
