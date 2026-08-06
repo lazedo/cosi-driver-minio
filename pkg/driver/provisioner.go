@@ -167,6 +167,16 @@ func (s *ProvisionerServer) DriverDeleteBucket(ctx context.Context, req *cosi.Dr
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "resolving backend for %q: %v", id, err)
 	}
+	// Idempotent: a retried deprovision whose first attempt already removed
+	// the backend bucket must succeed, not wedge the reconcile forever.
+	exists, err := be.MC.BucketExists(ctx, bucket)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "checking bucket %q: %v", bucket, err)
+	}
+	if !exists {
+		klog.InfoS("bucket already absent; delete is a no-op", "bucket", bucket)
+		return &cosi.DriverDeleteBucketResponse{}, nil
+	}
 	// empty the bucket first: RemoveBucket fails on a non-empty bucket, which
 	// would wedge a deletionPolicy=Delete BucketClaim forever.
 	objs := be.MC.ListObjects(ctx, bucket, minio.ListObjectsOptions{Recursive: true})
