@@ -6,8 +6,8 @@
 // Subcommands on the same binary:
 //   - (default)  serve the COSI gRPC socket
 //   - discover   reconcile BucketClass/BucketAccessClass pairs from discovered
-//     connections (labeled secrets, optionally MinIO Tenant CRs); runs as a
-//     third container in the driver pod. See pkg/discover.
+//     connections (labeled secrets, optionally house MinIO instance CRs);
+//     runs as a third container in the driver pod. See pkg/discover.
 package main
 
 import (
@@ -144,9 +144,9 @@ func main() {
 func runDiscover(args []string) {
 	fs := flag.NewFlagSet("discover", flag.ExitOnError)
 	var (
-		driverName = fs.String("driver-name", "minio.objectstorage.k8s.lazedo.dev", "driverName written into created classes (must match the driver container's --provisioner)")
-		interval   = fs.Duration("interval", 30*time.Second, "full reconcile interval")
-		watchCRs   = fs.Bool("watch-minio-crs", false, "also discover local minio-operator Tenant CRs (minio.min.io/v2)")
+		driverName     = fs.String("driver-name", "minio.objectstorage.k8s.lazedo.dev", "driverName written into created classes (must match the driver container's --provisioner)")
+		interval       = fs.Duration("interval", 30*time.Second, "full reconcile interval")
+		watchInstances = fs.Bool("watch-minio-instances", false, "also discover local house MinIO instance CRs (storage.lazedo.dev/v1alpha1)")
 	)
 	klog.InitFlags(fs)
 	if err := fs.Parse(args); err != nil {
@@ -156,9 +156,9 @@ func runDiscover(args []string) {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	if err := discover.Run(ctx, discover.Options{
-		DriverName:    *driverName,
-		Interval:      *interval,
-		WatchMinioCRs: *watchCRs,
+		DriverName:          *driverName,
+		Interval:            *interval,
+		WatchMinioInstances: *watchInstances,
 	}); err != nil {
 		klog.Fatalf("discover: %v", err)
 	}
