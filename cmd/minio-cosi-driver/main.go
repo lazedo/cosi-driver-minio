@@ -2,6 +2,12 @@
 // minio-cosi-driver: COSI provisioner driver for MinIO (release-0.2 / v1alpha1).
 // Runs alongside the objectstorage-sidecar over a shared unix socket; the sidecar
 // does the k8s reconcile, this process implements the gRPC Provisioner+Identity.
+//
+// Subcommands on the same binary:
+//   - (default)  serve the COSI gRPC socket
+//   - discover   reconcile BucketClass/BucketAccessClass pairs from discovered
+//     connections (labeled secrets, optionally MinIO Tenant CRs); runs as a
+//     third container in the driver pod. See pkg/discover.
 package main
 
 import (
@@ -16,6 +22,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/minio/madmin-go/v4"
 	"github.com/minio/minio-go/v7"
@@ -27,10 +34,18 @@ import (
 
 	cosi "sigs.k8s.io/container-object-storage-interface/proto"
 
+	"github.com/lazedo/cosi-driver-minio/pkg/discover"
 	"github.com/lazedo/cosi-driver-minio/pkg/driver"
 )
 
 func main() {
+	// Subcommand dispatch: `minio-cosi-driver discover [flags]` runs the
+	// class reconciler instead of the gRPC server.
+	if len(os.Args) > 1 && os.Args[1] == "discover" {
+		runDiscover(os.Args[2:])
+		return
+	}
+
 	var (
 		socket      = flag.String("driver-addr", "unix:///var/lib/cosi/cosi.sock", "unix socket the sidecar connects to")
 		provisioner = flag.String("provisioner", "minio.objectstorage.k8s.lazedo.dev", "COSI provisioner name (matches BucketClass.driverName)")
@@ -121,6 +136,31 @@ func main() {
 	klog.InfoS("minio-cosi-driver serving", "socket", *socket, "provisioner", *provisioner, "minio", *adminHost)
 	if err := srv.Serve(lis); err != nil {
 		klog.Fatalf("serve: %v", err)
+	}
+}
+
+// runDiscover parses the discover subcommand's own flag set and runs the
+// class reconciler until SIGINT/SIGTERM.
+func runDiscover(args []string) {
+	fs := flag.NewFlagSet("discover", flag.ExitOnError)
+	var (
+		driverName = fs.String("driver-name", "minio.objectstorage.k8s.lazedo.dev", "driverName written into created classes (must match the driver container's --provisioner)")
+		interval   = fs.Duration("interval", 30*time.Second, "full reconcile interval")
+		watchCRs   = fs.Bool("watch-minio-crs", false, "also discover local minio-operator Tenant CRs (minio.min.io/v2)")
+	)
+	klog.InitFlags(fs)
+	if err := fs.Parse(args); err != nil {
+		klog.Fatalf("parsing discover flags: %v", err)
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	if err := discover.Run(ctx, discover.Options{
+		DriverName:    *driverName,
+		Interval:      *interval,
+		WatchMinioCRs: *watchCRs,
+	}); err != nil {
+		klog.Fatalf("discover: %v", err)
 	}
 }
 
