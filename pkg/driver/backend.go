@@ -31,4 +31,9 @@ type Backend struct {
 const (
 	ParamClaimNS  = "cosi.lazedo.dev/claim-namespace"
 	ParamAccessNS = "cosi.lazedo.dev/access-namespace"
+
+	// ParamRequireNew, stamped by the (forked) controller when the creating
+	// BucketClaim set spec.requireNew: the bucket must not already exist in
+	// the object store — an existing one is refused with AlreadyExists.
+	ParamRequireNew = "cosi.lazedo.dev/require-new"
 )

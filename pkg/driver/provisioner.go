@@ -123,15 +123,28 @@ func (s *ProvisionerServer) DriverCreateBucket(ctx context.Context, req *cosi.Dr
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "resolving backend: %v", err)
 	}
+	requireNew := req.GetParameters()[ParamRequireNew] == "true"
 	exists, err := be.MC.BucketExists(ctx, name)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "checking bucket %q: %v", name, err)
 	}
+	if exists && requireNew {
+		// requireNew claims must give birth to their bucket: adopting an
+		// existing backend bucket is a TERMINAL refusal, surfaced by the
+		// sidecar as Event + condition (never a silent retry loop).
+		klog.InfoS("bucket exists and requireNew set; refusing", "bucket", name, "route", key)
+		return nil, status.Errorf(codes.AlreadyExists, "bucket %q already exists and requireNew forbids adopting it", name)
+	}
 	if !exists {
 		if err := be.MC.MakeBucket(ctx, name, minio.MakeBucketOptions{Region: be.Region}); err != nil {
-			// tolerate a race where another request created it first
+			// tolerate a race where another request created it first...
 			if exists2, e2 := be.MC.BucketExists(ctx, name); e2 != nil || !exists2 {
 				return nil, status.Errorf(codes.Internal, "creating bucket %q: %v", name, err)
+			}
+			// ...unless this claim demanded a brand-new bucket.
+			if requireNew {
+				klog.InfoS("bucket appeared during create and requireNew set; refusing", "bucket", name, "route", key)
+				return nil, status.Errorf(codes.AlreadyExists, "bucket %q already exists and requireNew forbids adopting it", name)
 			}
 		}
 		klog.InfoS("bucket created", "bucket", name, "route", key)
