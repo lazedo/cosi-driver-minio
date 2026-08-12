@@ -131,13 +131,19 @@ mc alias set b "$b_ep" "$b_ak" "$b_sk" --api S3v4 >/dev/null
 case "$1" in
   mirror)
     echo "mirror $a_b -> $b_b ${2:-}"
-    mc mirror --preserve ${2:-} "a/$a_b" "b/$b_b"
+    # --exit-on-error: sem ele o mc imprime um erro por objecto e sai com 0.
+    # Aconteceu: "Overwrite not allowed" em todos os 106 objectos, o job deu
+    # Complete, e o script seguiu para a verificacao como se tivesse copiado.
+    mc mirror --preserve --exit-on-error ${2:-} "a/$a_b" "b/$b_b"
     ;;
   verify)
     echo "A_OBJECTS=$(mc ls --recursive "a/$a_b" | wc -l | tr -d ' ')"
     echo "B_OBJECTS=$(mc ls --recursive "b/$b_b" | wc -l | tr -d ' ')"
     echo "A_BYTES=$(num "$(mc du --json "a/$a_b")" size)"
     echo "B_BYTES=$(num "$(mc du --json "b/$b_b")" size)"
+    ;;
+  count)
+    echo "A_OBJECTS=$(mc ls --recursive "a/$a_b" | wc -l | tr -d ' ')"
     ;;
   rb)
     # Esvaziar e remover. --force porque um bucket com objectos nao se apaga, e
@@ -283,6 +289,34 @@ else claim_and_access "$CLAIM" "$TO_CLASS" "$SRC_SECRET"; echo "    pronto"; fi
 # --- 7. staging -> final ----------------------------------------------------
 step "7/8 copiar staging -> $CLAIM (dentro do mesmo MinIO) e verificar"
 if [ -z "$DRY" ]; then
+  # O DESTINO RECRIADO TEM DE ESTAR VAZIO, e isto nao e zelo.
+  #
+  # Com deletionPolicy: Retain o bucket sobrevive ao claim, COM os dados dentro.
+  # Um claim novo com o mesmo nome herda esse conteudo -- e foi o que aconteceu
+  # numa ida-e-volta: o bucket de destino ainda tinha a copia da migracao
+  # anterior, o mirror recusou sobrepor tudo, e a verificacao passou na mesma
+  # porque contagem e bytes batiam certo... contra dados velhos.
+  #
+  # Se o conteudo antigo fosse DIFERENTE, a migracao teria "sucedido" deixando
+  # o consumidor a ler outra coisa. Um destino nao-vazio nao e um detalhe de
+  # limpeza, e a diferenca entre mover dados e parecer que se moveu.
+  eval "$(mc_job count "$SRC_SECRET" "$SRC_SECRET" | grep '^A_OBJECTS=')"
+  if [ "${A_OBJECTS:-0}" != "0" ]; then
+    echo "    o destino tem ${A_OBJECTS} objectos de uma vida anterior (Retain); a esvaziar"
+    mc_job rb "$SRC_SECRET" "$SRC_SECRET" >/dev/null
+    # rb apaga o bucket; recriar o claim devolve-o vazio.
+    $K -n "$NS" delete bucketaccess "$CLAIM" --wait=true >/dev/null
+    $K -n "$NS" delete bucketclaim "$CLAIM" --wait=true >/dev/null
+    for _ in $(seq 1 120); do
+      $K -n "$NS" get bucketclaim "$CLAIM" >/dev/null 2>&1 && { sleep 5; continue; }
+      $K get bucket "$CLAIM" >/dev/null 2>&1 || break
+      sleep 5
+    done
+    claim_and_access "$CLAIM" "$TO_CLASS" "$SRC_SECRET"
+    eval "$(mc_job count "$SRC_SECRET" "$SRC_SECRET" | grep '^A_OBJECTS=')"
+    [ "${A_OBJECTS:-1}" = "0" ] || die "o destino continua com ${A_OBJECTS} objectos -- nao copio para cima deles"
+  fi
+  echo "    destino vazio, como tem de estar"
   mc_job mirror "${STAGING}-bucketinfo" "$SRC_SECRET"
   equal_or_die "${STAGING}-bucketinfo" "$SRC_SECRET" "staging vs final"
 fi
