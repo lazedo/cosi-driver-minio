@@ -27,6 +27,12 @@
 #   6. repoint the workload, start it
 #   7. STOP. Removing the old claim is a separate decision.
 #
+# Nothing is asked of whoever runs this. The verification is a comparison the
+# script makes, not two numbers it prints for a person to judge -- a prompt that
+# only ever appears when everything is fine teaches people to answer it without
+# reading, and one that appears when something is wrong needs the reader to be
+# more careful than the script was.
+#
 # Two passes because the first one is long and the second is short: stopping the
 # workload for the whole copy would be an outage proportional to the data, and
 # copying while it writes would miss whatever arrived after the object listing.
@@ -133,7 +139,32 @@ echo "    destino pronto"
 # que exportá-los para a máquina de quem corre isto.
 mirror_pass() {
   local label="$1" extra="${2:-}"
-  local job="cosi-migrate-$(date +%s)"
+  mc_job "mirror-$label" "
+              echo \"mirror \$src_b -> \$dst_b ($label)\"
+              mc mirror --preserve $extra \"src/\$src_b\" \"dst/\$dst_b\"
+  "
+}
+
+# measure prints one machine-readable line per side. It exists because the
+# verification has to be a COMPARISON, not a report somebody reads: a script
+# that prints two numbers and asks a human whether they match has moved the
+# decision to the least reliable place available at 3am.
+measure() {
+  mc_job "verify" "
+              echo \"SRC_OBJECTS=\$(mc ls --recursive \"src/\$src_b\" | wc -l | tr -d ' ')\"
+              echo \"DST_OBJECTS=\$(mc ls --recursive \"dst/\$dst_b\" | wc -l | tr -d ' ')\"
+              echo \"SRC_BYTES=\$(mc du --json \"src/\$src_b\" | sed -n 's/.*\"size\":\\([0-9]*\\).*/\\1/p' | head -1)\"
+              echo \"DST_BYTES=\$(mc du --json \"dst/\$dst_b\" | sed -n 's/.*\"size\":\\([0-9]*\\).*/\\1/p' | head -1)\"
+  "
+}
+
+# mc_job runs a snippet in a Job with both BucketInfo secrets mounted, and
+# echoes the pod log. mc runs IN THE CLUSTER: both endpoints are internal
+# Services and both credentials are Secrets, so mounting them beats exporting
+# them to whatever machine is driving this.
+mc_job() {
+  local name="$1" body="$2"
+  local job="cosi-migrate-${name}-$(date +%s)"
   cat <<YAML | $K -n "$NS" apply -f - >/dev/null
 apiVersion: batch/v1
 kind: Job
@@ -158,13 +189,9 @@ spec:
               dst_sk=\$(sed -n 's/.*"accessSecretKey":"\([^"]*\)".*/\1/p' /dst/BucketInfo)
               src_b=\$(sed -n 's/.*"bucketName":"\([^"]*\)".*/\1/p' /src/BucketInfo)
               dst_b=\$(sed -n 's/.*"bucketName":"\([^"]*\)".*/\1/p' /dst/BucketInfo)
-              mc alias set src "\$src_ep" "\$src_ak" "\$src_sk" --api S3v4
-              mc alias set dst "\$dst_ep" "\$dst_ak" "\$dst_sk" --api S3v4
-              echo "mirror \$src_b -> \$dst_b ($label)"
-              mc mirror --preserve $extra "src/\$src_b" "dst/\$dst_b"
-              echo "--- contagens ---"
-              mc ls --recursive "src/\$src_b" | wc -l
-              mc ls --recursive "dst/\$dst_b" | wc -l
+              mc alias set src "\$src_ep" "\$src_ak" "\$src_sk" --api S3v4 >/dev/null
+              mc alias set dst "\$dst_ep" "\$dst_ak" "\$dst_sk" --api S3v4 >/dev/null
+$body
           volumeMounts:
             - { name: src, mountPath: /src, readOnly: true }
             - { name: dst, mountPath: /dst, readOnly: true }
@@ -172,9 +199,9 @@ spec:
         - { name: src, secret: { secretName: $SRC_SECRET } }
         - { name: dst, secret: { secretName: $NEW_SECRET } }
 YAML
-  $K -n "$NS" wait --for=condition=complete --timeout=6h "job/$job" \
-    || { $K -n "$NS" logs "job/$job" | tail -30; die "a cópia falhou ($label)"; }
-  $K -n "$NS" logs "job/$job" | tail -6
+  $K -n "$NS" wait --for=condition=complete --timeout=6h "job/$job" >/dev/null \
+    || { $K -n "$NS" logs "job/$job" | tail -30 >&2; die "job $name falhou"; }
+  $K -n "$NS" logs "job/$job"
   $K -n "$NS" delete job "$job" >/dev/null 2>&1 || true
 }
 
@@ -194,11 +221,18 @@ step "4/7 segunda cópia (a cauda; nada escreve agora)"
 [ -n "$DRY" ] && echo "    [dry-run] mc mirror --remove" || mirror_pass "cauda" "--remove"
 
 # --- 5. verificar ANTES de repontar -----------------------------------------
-step "5/7 verificação"
-echo "    (as duas contagens do passo anterior têm de ser iguais)"
+step "5/7 verificação: objectos e bytes têm de bater certo"
 if [ -z "$DRY" ]; then
-  read -r -p "    as contagens batem certo? repontar o workload? [sim/NÃO] " ok
-  [ "$ok" = "sim" ] || { echo "    abortado; o workload continua parado e nada foi repontado"; exit 1; }
+  eval "$(measure | grep -E '^(SRC|DST)_(OBJECTS|BYTES)=')"
+  echo "    objectos: origem=${SRC_OBJECTS:-?}  destino=${DST_OBJECTS:-?}"
+  echo "    bytes   : origem=${SRC_BYTES:-?}  destino=${DST_BYTES:-?}"
+  # Bytes E contagem. A contagem sozinha nao apanha um objecto truncado, que e
+  # exactamente a falha que uma migracao de dados nao pode deixar passar.
+  [ -n "${SRC_OBJECTS:-}" ] && [ "${SRC_OBJECTS}" = "${DST_OBJECTS:-}" ] \
+    || die "contagens diferentes -- NADA foi repontado; o workload continua parado (repor: kubectl -n $NS scale $WORKLOAD --replicas=$REPLICAS)"
+  [ -n "${SRC_BYTES:-}" ] && [ "${SRC_BYTES}" = "${DST_BYTES:-}" ] \
+    || die "bytes diferentes -- NADA foi repontado; o workload continua parado (repor: kubectl -n $NS scale $WORKLOAD --replicas=$REPLICAS)"
+  echo "    igual dos dois lados"
 fi
 
 # --- 6. repontar e arrancar -------------------------------------------------
