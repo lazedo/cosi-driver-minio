@@ -1,0 +1,140 @@
+# MinIO COSI provisioner: driver + discover + objectstorage-sidecar, a partilhar
+# um socket unix (emptyDir /var/lib/cosi).
+#
+# ESTE FICHEIRO É A FONTE. Vivia em duplicado nos repos de cluster --
+# kzconcluster/csi-s3/ e capi-navigator/kz-eu/apps/ -- e as cópias divergiram
+# exactamente como duas cópias divergem: as imagens foram actualizadas no
+# cluster com `kubectl set image` e nenhum dos ficheiros acompanhou, portanto
+# ambos descreviam um deployment que já não existia em lado nenhum.
+#
+# Quem o consome:
+#   west   kzconcluster/csi-s3/install-cosi-minio-driver.sh -- aplica daqui,
+#          como o install-driver.sh do csi-s3 já fazia a partir do repo dele.
+#   kz-eu  capi-navigator/kz-eu/apps-publish.sh -- copia daqui para apps/ e
+#          publica no kz-chartrepo, do mesmo modo que gera qubicle-provision.yaml
+#          a partir do repo do kazoo.
+#
+# Pré-requisito por cluster (não está aqui porque é segredo e é local): o secret
+# cosi-minio-admin no ns cosi-minio (cosi-minio-admin-secret.sh) e o lazedo-ghcr.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cosi-minio
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: minio-cosi
+  namespace: cosi-minio
+imagePullSecrets:
+  - name: lazedo-ghcr
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: minio-cosi
+rules:
+  - apiGroups: ["objectstorage.k8s.io"]
+    resources: [buckets, bucketaccesses, bucketclaims, bucketaccessclasses, bucketclasses, buckets/status, bucketaccesses/status, bucketclaims/status]
+    verbs: [get, list, watch, update, create, delete]
+  - apiGroups: [""]
+    resources: [secrets, events]
+    verbs: [get, list, watch, update, create, delete]
+  # Para o contentor `discover` com --watch-minio-instances: uma classe por
+  # instancia da casa exige ler os CRs e a credencial root de cada uma. Só
+  # leitura -- o discover nunca escreve numa instancia, apenas deriva dela a
+  # ligacao que grava num secret proprio.
+  - apiGroups: ["storage.lazedo.dev"]
+    resources: [minios]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: minio-cosi
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: ClusterRole, name: minio-cosi }
+subjects:
+  - kind: ServiceAccount
+    name: minio-cosi
+    namespace: cosi-minio
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: minio-cosi
+  namespace: cosi-minio
+  labels: { app: minio-cosi }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: minio-cosi }
+  template:
+    metadata:
+      labels: { app: minio-cosi }
+    spec:
+      serviceAccountName: minio-cosi
+      containers:
+        - name: driver
+          # Tag = SHA curto do commit, que é o que a CI dos dois repos publica.
+          # As tags à mão que aqui estavam antes (0.2.1-lazedo2, v0.2.2-lazedo1)
+          # foram apagadas do GHCR e só sobreviviam em cache do nó -- o pod
+          # corria, mas qualquer reagendamento dava ImagePullBackOff.
+          # lazedo/cosi-driver-minio@f4617a2
+          image: ghcr.io/lazedo/minio-cosi-driver:99639e8
+          args:
+            - --driver-addr=unix:///var/lib/cosi/cosi.sock
+            - --provisioner=minio.objectstorage.k8s.lazedo.dev
+            - --minio-admin-endpoint=minio.minio.svc:443
+            - --s3-endpoint=https://minio.minio.svc
+            - --secure=true
+            - --ca-file=/etc/cosi/ca/ca.crt
+          env:
+            - { name: MINIO_ACCESS_KEY, valueFrom: { secretKeyRef: { name: cosi-minio-admin, key: accessKey } } }
+            - { name: MINIO_SECRET_KEY, valueFrom: { secretKeyRef: { name: cosi-minio-admin, key: secretKey } } }
+          volumeMounts:
+            - { name: socket, mountPath: /var/lib/cosi }
+            - { name: ca, mountPath: /etc/cosi/ca, readOnly: true }
+        # O TERCEIRO CONTENTOR, e o que faz o destino deixar de estar nos flags.
+        #
+        # Sem ele so restam as BucketClasses feitas a mao, e uma classe sem
+        # parameters.connectionSecret cai no ultimo nivel do backendForCreate --
+        # o MinIO estatico dos argumentos acima. Foi assim que o bucket
+        # couch-attachments foi parar ao tenant `min` e nao ao myminio4: nao foi
+        # escolha de ninguem, foi o fallback.
+        #
+        # O discover cria um par BucketClass/BucketAccessClass por fonte, cada um
+        # com o seu connectionSecret, e o BucketId passa a codificar a ligacao
+        # usada -- portanto um bucket ja criado continua a resolver para o mesmo
+        # destino mesmo que a classe mude depois.
+        - name: discover
+          image: ghcr.io/lazedo/minio-cosi-driver:99639e8
+          args:
+            - discover
+            # Tem de ser igual ao --provisioner do contentor driver: e o
+            # driverName escrito nas classes que ele cria, e uma classe que
+            # nomeie outro driver nao e servida por este pod.
+            - --driver-name=minio.objectstorage.k8s.lazedo.dev
+            # Descobre tambem as instancias do operador da casa, nao so os
+            # secrets de ligacao entregues pelo bind-broker. E este o flag que
+            # faz aparecer uma classe para o myminio4.
+            - --watch-minio-instances=true
+        - name: sidecar
+          # O sidecar da casa, o mesmo que o cosi-bind corre. O stock v0.2.2 que
+          # aqui estava não acompanha o controller com refcount/claim-refs: o
+          # Bucket media-capture ficou sem status nenhum ("failed to update
+          # bucket finalizers: the object has been modified") e o BucketAccess
+          # nunca foi concedido, enquanto o bigdata -- servido pelo sidecar da
+          # casa -- passou. lazedo/container-object-storage-interface@f6b6e68
+          image: ghcr.io/lazedo/objectstorage-sidecar:f8cfcfe9
+          args:
+            - --driver-addr=unix:///var/lib/cosi/cosi.sock
+          volumeMounts:
+            - { name: socket, mountPath: /var/lib/cosi }
+      volumes:
+        - name: socket
+          emptyDir: {}
+        - name: ca
+          secret:
+            secretName: cosi-minio-admin
+            items:
+              - { key: ca.crt, path: ca.crt }
