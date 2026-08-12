@@ -617,6 +617,11 @@ func (r *reconciler) ensureBucketClass(ctx context.Context, name string, src sou
 	classes := r.cosi.ObjectstorageV1alpha1().BucketClasses()
 	existing, err := classes.Get(ctx, name, metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
+		// Retain on CREATION only. Losing data by default is far worse than
+		// leaving it behind, so a class this component invents starts safe --
+		// but see ensureBucketClass's drift check: the policy is not enforced
+		// afterwards, because which of the two an operator wants is theirs to
+		// decide and not a routing concern.
 		_, err = classes.Create(ctx, &cosiapi.BucketClass{
 			ObjectMeta:     classMeta(name, src),
 			DriverName:     r.opts.DriverName,
@@ -638,8 +643,18 @@ func (r *reconciler) ensureBucketClass(ctx context.Context, name string, src sou
 		r.warnOnceUnmanaged("bucketclass/"+name, src.origin)
 		return nil
 	}
+	// DELETIONPOLICY IS NOT DRIFT. This used to demand Retain here and write it
+	// back below, so editing a class to Delete was accepted by the API server
+	// and undone on the next tick -- thirty seconds during which it looked like
+	// it had stuck, which is worse than refusing the edit outright.
+	//
+	// What this component owns is ROUTING: the driver that serves the class and
+	// the connection it points at. Those, wrong, send buckets to the wrong MinIO
+	// and are worth correcting under anybody's feet. A retention policy breaks
+	// nothing and belongs to whoever operates the storage -- and the cost of
+	// imposing it is real: every migration away from a Retain class leaves a
+	// full bucket behind, with no declarative way to ask for anything else.
 	if existing.DriverName == r.opts.DriverName &&
-		existing.DeletionPolicy == cosiapi.DeletionPolicyRetain &&
 		existing.Parameters[paramConnectionSecret] == src.connectionSecret {
 		return nil
 	}
@@ -654,7 +669,7 @@ func (r *reconciler) ensureBucketClass(ctx context.Context, name string, src sou
 			return nil
 		}
 		cur.DriverName = r.opts.DriverName
-		cur.DeletionPolicy = cosiapi.DeletionPolicyRetain
+		// cur.DeletionPolicy deliberately untouched -- see the drift check above.
 		if cur.Parameters == nil {
 			cur.Parameters = map[string]string{}
 		}
