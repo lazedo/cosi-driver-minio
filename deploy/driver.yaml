@@ -80,7 +80,7 @@ spec:
           # foram apagadas do GHCR e só sobreviviam em cache do nó -- o pod
           # corria, mas qualquer reagendamento dava ImagePullBackOff.
           # lazedo/cosi-driver-minio@f4617a2
-          image: ghcr.io/lazedo/minio-cosi-driver:99639e8
+          image: ghcr.io/lazedo/minio-cosi-driver:ff0b641
           args:
             - --driver-addr=unix:///var/lib/cosi/cosi.sock
             - --provisioner=minio.objectstorage.k8s.lazedo.dev
@@ -107,7 +107,7 @@ spec:
         # usada -- portanto um bucket ja criado continua a resolver para o mesmo
         # destino mesmo que a classe mude depois.
         - name: discover
-          image: ghcr.io/lazedo/minio-cosi-driver:99639e8
+          image: ghcr.io/lazedo/minio-cosi-driver:ff0b641
           args:
             - discover
             # Tem de ser igual ao --provisioner do contentor driver: e o

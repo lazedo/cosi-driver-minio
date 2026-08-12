@@ -9,12 +9,22 @@
 # carries its tag.
 name: image
 
+# paths-ignore, e a lista e curta de proposito: o que NAO entra na imagem.
+# Sem isto, um commit que so mexe em deploy/migrate-bucket.sh dispara um build
+# multi-arch completo para produzir bits identicos -- aconteceu tres vezes
+# seguidas num dia. Tudo o resto continua a construir, incluindo o Dockerfile e
+# os manifestos que descrevem como a imagem corre: nao vale a pena poupar um
+# build a custo de nao saber se o que se publica ainda arranca.
 on:
   push:
     branches:
       - master
     tags:
       - 'v*'
+    paths-ignore:
+      - 'deploy/*.sh'
+      - '**/*.md'
+      - 'docs/**'
   workflow_dispatch:
 
 concurrency:
