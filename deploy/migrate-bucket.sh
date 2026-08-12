@@ -131,10 +131,16 @@ mc alias set b "$b_ep" "$b_ak" "$b_sk" --api S3v4 >/dev/null
 case "$1" in
   mirror)
     echo "mirror $a_b -> $b_b ${2:-}"
-    # --exit-on-error: sem ele o mc imprime um erro por objecto e sai com 0.
-    # Aconteceu: "Overwrite not allowed" em todos os 106 objectos, o job deu
-    # Complete, e o script seguiu para a verificacao como se tivesse copiado.
-    mc mirror --preserve --exit-on-error ${2:-} "a/$a_b" "b/$b_b"
+    # O CODIGO DE SAIDA DO mc NAO E DE CONFIANCA AQUI, e nao ha bandeira que o
+    # resolva: mirror aceita --skip-errors (o contrario do que se quer) e
+    # --retry, e nenhuma "falha ao primeiro erro". Visto em producao: "Overwrite
+    # not allowed" em todos os 106 objectos, saida 0, Job Complete.
+    #
+    # Por isso a garantia nao esta aqui, esta no passo 7 do chamador: o destino
+    # tem de estar VAZIO antes de copiar. Com um destino vazio, um objecto que o
+    # mirror deixe cair aparece na verificacao como contagem ou bytes a menos --
+    # que e a unica forma fiavel de o apanhar.
+    mc mirror --preserve ${2:-} "a/$a_b" "b/$b_b"
     ;;
   verify)
     echo "A_OBJECTS=$(mc ls --recursive "a/$a_b" | wc -l | tr -d ' ')"
