@@ -226,14 +226,29 @@ func (s *ProvisionerServer) DriverGrantBucketAccess(ctx context.Context, req *co
 	if s.Router != nil {
 		endpoint = s.Router.GrantEndpoint(ctx, req.GetParameters(), endpoint)
 	}
-	klog.InfoS("granted access", "bucket", bucket, "user", accessKey, "endpoint", endpoint)
+
+	// Advertised region: never make consumers guess. When the backend has no
+	// configured region, ask the server for the bucket's location — the exact
+	// string its SigV4 validation uses (an unconfigured MinIO answers
+	// us-east-1) — so presigning works from the BucketInfo alone, with no
+	// out-of-band region config to keep in step.
+	region := be.Region
+	if region == "" {
+		loc, lerr := be.MC.GetBucketLocation(ctx, bucket)
+		if lerr != nil {
+			klog.ErrorS(lerr, "resolving bucket region, advertising none", "bucket", bucket)
+		} else {
+			region = loc
+		}
+	}
+	klog.InfoS("granted access", "bucket", bucket, "user", accessKey, "endpoint", endpoint, "region", region)
 
 	return &cosi.DriverGrantBucketAccessResponse{
 		AccountId: accessKey,
 		Credentials: map[string]*cosi.CredentialDetails{
 			s3Key: {Secrets: map[string]string{
 				keyEndpoint:        endpoint,
-				keyRegion:          be.Region,
+				keyRegion:          region,
 				keyAccessKeyID:     accessKey,
 				keyAccessSecretKey: secretKey,
 			}},
