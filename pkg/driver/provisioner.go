@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/minio/madmin-go/v4"
 	"github.com/minio/minio-go/v7"
@@ -23,12 +24,13 @@ const (
 	s3Key       = "s3"
 	keyEndpoint = "endpoint"
 	keyRegion   = "region"
-	// paramAdvertiseEndpoint (access-class parameter, kept in step with
-	// pkg/discover): "external" advertises the backend's public URI in the
-	// grant instead of the in-cluster endpoint.
-	paramAdvertiseEndpoint = "advertiseEndpoint"
-	keyAccessKeyID         = "accessKeyID"
-	keyAccessSecretKey     = "accessSecretKey"
+	// keyUris is the full menu of URIs the credential is valid at —
+	// in-cluster and public — surfaced by the (forked) sidecar as BucketInfo
+	// secretS3.uris. endpoint stays the default choice; reachability-aware
+	// consumers (presigning for off-cluster clients) pick from the menu.
+	keyUris            = "uris"
+	keyAccessKeyID     = "accessKeyID"
+	keyAccessSecretKey = "accessSecretKey"
 )
 
 // Router is the extension point for routing a request to a Backend beyond the
@@ -227,17 +229,14 @@ func (s *ProvisionerServer) DriverGrantBucketAccess(ctx context.Context, req *co
 	if endpoint == "" {
 		endpoint = s.S3Endpoint
 	}
-	// access classes may ask for the instance's public URI (consumers that
-	// presign URLs off-cluster clients must be able to fetch).
-	if req.GetParameters()[paramAdvertiseEndpoint] == "external" {
-		if be.ExternalEndpoint == "" {
-			return nil, status.Errorf(codes.FailedPrecondition,
-				"access class asks for the external endpoint but the backend declares none")
-		}
-		endpoint = be.ExternalEndpoint
-	}
 	if s.Router != nil {
 		endpoint = s.Router.GrantEndpoint(ctx, req.GetParameters(), endpoint)
+	}
+	// The full menu: the advertised endpoint plus the instance's public URI
+	// when it declares one.
+	uris := []string{endpoint}
+	if be.ExternalEndpoint != "" && be.ExternalEndpoint != endpoint {
+		uris = append(uris, be.ExternalEndpoint)
 	}
 
 	// Advertised region: never make consumers guess. When the backend has no
@@ -262,6 +261,7 @@ func (s *ProvisionerServer) DriverGrantBucketAccess(ctx context.Context, req *co
 			s3Key: {Secrets: map[string]string{
 				keyEndpoint:        endpoint,
 				keyRegion:          region,
+				keyUris:            strings.Join(uris, ","),
 				keyAccessKeyID:     accessKey,
 				keyAccessSecretKey: secretKey,
 			}},

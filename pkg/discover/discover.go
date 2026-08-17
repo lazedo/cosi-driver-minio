@@ -102,10 +102,6 @@ const (
 	// AnnotationSource records where a managed object came from, for humans.
 	AnnotationSource = "cosi.lazedo.dev/source"
 
-	// paramAdvertiseEndpoint selects which endpoint grants through an access
-	// class advertise: "external" = the instance's public URI. Must match the
-	// driver's grant-time parameter (pkg/driver).
-	paramAdvertiseEndpoint = "advertiseEndpoint"
 	// paramConnectionSecret is the BucketClass/BucketAccessClass parameter
 	// the driver's connection resolver reads ("<ns>/<name>").
 	paramConnectionSecret = "connectionSecret"
@@ -140,11 +136,10 @@ type Options struct {
 
 // source is one discovered connection a class pair should exist for.
 type source struct {
-	connectionSecret  string // "<ns>/<name>" for parameters.connectionSecret
-	origin            string // human-readable provenance for AnnotationSource
-	markedDefault     bool   // carries the MarkerDefault label/annotation
-	externalEndpoint  string // instance's public URI (spec.expose.host), "" = none
-	advertiseExternal bool   // this (access-class) variant advertises it in grants
+	connectionSecret string // "<ns>/<name>" for parameters.connectionSecret
+	origin           string // human-readable provenance for AnnotationSource
+	markedDefault    bool   // carries the MarkerDefault label/annotation
+	externalEndpoint string // instance's public URI (spec.expose.host), "" = none
 }
 
 // connSecret is a connection secret discover itself must materialize
@@ -276,34 +271,16 @@ func (r *reconciler) reconcile(ctx context.Context) error {
 		}
 	}
 
-	// Access classes: every source, plus an "<name>-external" variant for
-	// sources whose instance declares a public URI — grants through it
-	// advertise the external endpoint (for consumers presigning URLs that
-	// off-cluster clients must reach).
-	accessDesired := map[string]source{}
-	for name, src := range desired {
-		accessDesired[name] = src
-		if src.externalEndpoint != "" {
-			ext := src
-			ext.advertiseExternal = true
-			ext.markedDefault = false
-			ext.origin = "external-variant:" + src.origin
-			accessDesired[name+"-external"] = ext
-		}
-	}
-
 	var errs []error
 	for name, src := range desired {
 		if err := r.ensureBucketClass(ctx, name, src); err != nil {
 			errs = append(errs, fmt.Errorf("bucketclass %s: %w", name, err))
 		}
-	}
-	for name, src := range accessDesired {
 		if err := r.ensureBucketAccessClass(ctx, name, src); err != nil {
 			errs = append(errs, fmt.Errorf("bucketaccessclass %s: %w", name, err))
 		}
 	}
-	if err := r.gc(ctx, desired, accessDesired); err != nil {
+	if err := r.gc(ctx, desired); err != nil {
 		errs = append(errs, err)
 	}
 	if len(errs) > 0 {
@@ -731,7 +708,7 @@ func (r *reconciler) ensureBucketAccessClass(ctx context.Context, name string, s
 			ObjectMeta:         classMeta(name, src),
 			DriverName:         r.opts.DriverName,
 			AuthenticationType: authenticationTypeKey,
-			Parameters:         accessClassParams(src),
+			Parameters:         map[string]string{paramConnectionSecret: src.connectionSecret},
 		}, metav1.CreateOptions{})
 		if apierrors.IsAlreadyExists(err) {
 			return nil
@@ -750,8 +727,7 @@ func (r *reconciler) ensureBucketAccessClass(ctx context.Context, name string, s
 	}
 	if existing.DriverName == r.opts.DriverName &&
 		existing.AuthenticationType == authenticationTypeKey &&
-		existing.Parameters[paramConnectionSecret] == src.connectionSecret &&
-		existing.Parameters[paramAdvertiseEndpoint] == accessClassParams(src)[paramAdvertiseEndpoint] {
+		existing.Parameters[paramConnectionSecret] == src.connectionSecret {
 		return nil
 	}
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
@@ -764,7 +740,10 @@ func (r *reconciler) ensureBucketAccessClass(ctx context.Context, name string, s
 		}
 		cur.DriverName = r.opts.DriverName
 		cur.AuthenticationType = authenticationTypeKey
-		cur.Parameters = accessClassParams(src)
+		if cur.Parameters == nil {
+			cur.Parameters = map[string]string{}
+		}
+		cur.Parameters[paramConnectionSecret] = src.connectionSecret
 		if cur.Annotations == nil {
 			cur.Annotations = map[string]string{}
 		}
@@ -779,7 +758,7 @@ func (r *reconciler) ensureBucketAccessClass(ctx context.Context, name string, s
 
 // gc deletes managed classes whose source disappeared. Only classes labeled
 // LabelManagedBy=ManagedByValue are candidates — static classes are safe.
-func (r *reconciler) gc(ctx context.Context, desired, accessDesired map[string]source) error {
+func (r *reconciler) gc(ctx context.Context, desired map[string]source) error {
 	sel := metav1.ListOptions{LabelSelector: LabelManagedBy + "=" + ManagedByValue}
 	var errs []error
 
@@ -806,7 +785,7 @@ func (r *reconciler) gc(ctx context.Context, desired, accessDesired map[string]s
 	}
 	for i := range bacs.Items {
 		name := bacs.Items[i].Name
-		if _, ok := accessDesired[name]; ok {
+		if _, ok := desired[name]; ok {
 			continue
 		}
 		err := r.cosi.ObjectstorageV1alpha1().BucketAccessClasses().Delete(ctx, name, metav1.DeleteOptions{})
@@ -821,13 +800,4 @@ func (r *reconciler) gc(ctx context.Context, desired, accessDesired map[string]s
 		return fmt.Errorf("gc: %d error(s), first: %w", len(errs), errs[0])
 	}
 	return nil
-}
-
-// accessClassParams builds a BucketAccessClass's parameters for a source.
-func accessClassParams(src source) map[string]string {
-	p := map[string]string{paramConnectionSecret: src.connectionSecret}
-	if src.advertiseExternal {
-		p[paramAdvertiseEndpoint] = "external"
-	}
-	return p
 }
