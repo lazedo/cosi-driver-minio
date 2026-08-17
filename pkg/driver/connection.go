@@ -96,7 +96,7 @@ func (c *Connections) backendFor(ctx context.Context, ref string) (*Backend, err
 	if err != nil {
 		return nil, fmt.Errorf("connection %s s3 client: %w", ref, err)
 	}
-	b := &Backend{MC: mc, Adm: adm, S3Endpoint: endpoint}
+	b := &Backend{MC: mc, Adm: adm, S3Endpoint: endpoint, ExternalEndpoint: string(sec.Data["externalEndpoint"])}
 	c.mu.Lock()
 	if c.cache == nil {
 		c.cache = map[string]*Backend{}

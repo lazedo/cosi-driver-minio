@@ -17,6 +17,11 @@ type Backend struct {
 	Adm        *madmin.AdminClient
 	S3Endpoint string
 	Region     string
+	// ExternalEndpoint is the instance's public URI (from the connection
+	// secret's externalEndpoint, sourced from spec.expose.host); grants whose
+	// access class sets advertiseEndpoint=external advertise it instead of
+	// S3Endpoint — for consumers that presign URLs off-cluster clients fetch.
+	ExternalEndpoint string
 }
 
 // NOTA de desenho: já aqui viveu um Prefix de tenancy aplicado pelo driver.

@@ -20,11 +20,15 @@ import (
 // S3 credential secret keys the sidecar reads (client/apis/objectstorage/consts):
 // they land verbatim in the BucketInfo JSON the csi.lazedo.dev driver parses.
 const (
-	s3Key              = "s3"
-	keyEndpoint        = "endpoint"
-	keyRegion          = "region"
-	keyAccessKeyID     = "accessKeyID"
-	keyAccessSecretKey = "accessSecretKey"
+	s3Key       = "s3"
+	keyEndpoint = "endpoint"
+	keyRegion   = "region"
+	// paramAdvertiseEndpoint (access-class parameter, kept in step with
+	// pkg/discover): "external" advertises the backend's public URI in the
+	// grant instead of the in-cluster endpoint.
+	paramAdvertiseEndpoint = "advertiseEndpoint"
+	keyAccessKeyID         = "accessKeyID"
+	keyAccessSecretKey     = "accessSecretKey"
 )
 
 // Router is the extension point for routing a request to a Backend beyond the
@@ -222,6 +226,15 @@ func (s *ProvisionerServer) DriverGrantBucketAccess(ctx context.Context, req *co
 	endpoint := be.S3Endpoint
 	if endpoint == "" {
 		endpoint = s.S3Endpoint
+	}
+	// access classes may ask for the instance's public URI (consumers that
+	// presign URLs off-cluster clients must be able to fetch).
+	if req.GetParameters()[paramAdvertiseEndpoint] == "external" {
+		if be.ExternalEndpoint == "" {
+			return nil, status.Errorf(codes.FailedPrecondition,
+				"access class asks for the external endpoint but the backend declares none")
+		}
+		endpoint = be.ExternalEndpoint
 	}
 	if s.Router != nil {
 		endpoint = s.Router.GrantEndpoint(ctx, req.GetParameters(), endpoint)
