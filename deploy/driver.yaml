@@ -58,6 +58,32 @@ subjects:
     name: minio-cosi
     namespace: cosi-minio
 ---
+# O sidecar (>= 01d5d28) faz leader-election: precisa de leases no SEU
+# namespace. Faltava — o sidecar ficava mudo em "cannot get leases" e nenhum
+# Bucket era aprovisionado (drift: o sidecar ganhou LE no repo cosi/cosi e
+# este bundle nunca aprendeu). Role namespaced de propósito (least privilege);
+# o relocate.py do klab move namespace e subjects em bloco.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: minio-cosi-leases
+  namespace: cosi-minio
+rules:
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    verbs: [get, watch, list, create, update, delete]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: minio-cosi-leases
+  namespace: cosi-minio
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: minio-cosi-leases }
+subjects:
+  - kind: ServiceAccount
+    name: minio-cosi
+    namespace: cosi-minio
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
