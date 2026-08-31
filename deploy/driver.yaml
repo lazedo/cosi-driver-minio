@@ -157,7 +157,7 @@ spec:
           # bucket finalizers: the object has been modified") e o BucketAccess
           # nunca foi concedido, enquanto o bigdata -- servido pelo sidecar da
           # casa -- passou. lazedo/container-object-storage-interface@f6b6e68
-          image: ghcr.io/lazedo/objectstorage-sidecar:01d5d28
+          image: ghcr.io/lazedo/objectstorage-sidecar:d471bb6
           args:
             - --driver-addr=unix:///var/lib/cosi/cosi.sock
           volumeMounts:

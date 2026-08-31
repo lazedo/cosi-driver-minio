@@ -4,6 +4,7 @@ package driver
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -207,7 +208,14 @@ func (s *ProvisionerServer) DriverGrantBucketAccess(ctx context.Context, req *co
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "resolving backend for %q: %v", id, err)
 	}
-	accessKey := "cosi-" + randHex(8)
+	// DETERMINISTIC access key, derived from the sidecar's stable account
+	// name (ba-<accessUID>): the grant call is retried by the sidecar and
+	// MUST be idempotent — random-per-call minted a fresh IAM user on every
+	// retry (bitten 2026-08-31: two users for one access, secret carrying
+	// one and status the other; revoke would orphan live credentials).
+	// AddUser on an existing user resets its secret key — retry = rotation,
+	// and the upserted credentials secret always matches.
+	accessKey := deterministicAccessKey(req.GetName())
 	secretKey := randHex(20)
 
 	if err := be.Adm.AddUser(ctx, accessKey, secretKey); err != nil {
@@ -218,7 +226,8 @@ func (s *ProvisionerServer) DriverGrantBucketAccess(ctx context.Context, req *co
 		_ = be.Adm.RemoveUser(ctx, accessKey)
 		return nil, status.Errorf(codes.Internal, "creating policy: %v", err)
 	}
-	if _, err := be.Adm.AttachPolicy(ctx, madmin.PolicyAssociationReq{Policies: []string{policyName}, User: accessKey}); err != nil {
+	if _, err := be.Adm.AttachPolicy(ctx, madmin.PolicyAssociationReq{Policies: []string{policyName}, User: accessKey}); err != nil &&
+		!policyAlreadyAttached(err) {
 		_ = be.Adm.RemoveUser(ctx, accessKey)
 		return nil, status.Errorf(codes.Internal, "attaching policy: %v", err)
 	}
@@ -303,4 +312,18 @@ func randHex(n int) string {
 	b := make([]byte, n)
 	_, _ = rand.Read(b)
 	return hex.EncodeToString(b)
+}
+
+// deterministicAccessKey maps the sidecar's stable account name (ba-<uid>)
+// to a fixed MinIO username, making DriverGrantBucketAccess idempotent.
+func deterministicAccessKey(accountName string) string {
+	sum := sha256.Sum256([]byte(accountName))
+	return "cosi-" + hex.EncodeToString(sum[:8])
+}
+
+// policyAlreadyAttached tolerates the only benign AttachPolicy failure: the
+// association already exists (a retried grant), which madmin surfaces as a
+// no-net-effect policy change error.
+func policyAlreadyAttached(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "policy change is already in effect")
 }
