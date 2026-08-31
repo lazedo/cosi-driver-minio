@@ -38,8 +38,14 @@ rules:
     resources: [buckets, bucketaccesses, bucketclaims, bucketaccessclasses, bucketclasses, buckets/status, bucketaccesses/status, bucketclaims/status]
     verbs: [get, list, watch, update, create, delete]
   - apiGroups: [""]
-    resources: [secrets, events]
+    resources: [secrets]
     verbs: [get, list, watch, update, create, delete]
+  # events levam patch: o event recorder do sidecar AGREGA (patch no evento
+  # existente ao repetir) — sem o verbo, cada repetição vira "Server rejected
+  # event" em loop no log (cosmético, mas ensurdecedor; mordido 2026-08-31).
+  - apiGroups: [""]
+    resources: [events]
+    verbs: [get, list, watch, update, create, delete, patch]
   # Para o contentor `discover` com --watch-minio-instances: uma classe por
   # instancia da casa exige ler os CRs e a credencial root de cada uma. Só
   # leitura -- o discover nunca escreve numa instancia, apenas deriva dela a
