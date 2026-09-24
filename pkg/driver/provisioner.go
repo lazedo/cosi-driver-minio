@@ -32,6 +32,9 @@ const (
 	keyUris            = "uris"
 	keyAccessKeyID     = "accessKeyID"
 	keyAccessSecretKey = "accessSecretKey"
+	// keyCACert carries the instance CA (PEM) when the endpoint is signed by
+	// a private CA — the (forked) sidecar surfaces it as BucketInfo secretS3.caCert.
+	keyCACert = "ca.crt"
 )
 
 // Router is the extension point for routing a request to a Backend beyond the
@@ -264,17 +267,21 @@ func (s *ProvisionerServer) DriverGrantBucketAccess(ctx context.Context, req *co
 	}
 	klog.InfoS("granted access", "bucket", bucket, "user", accessKey, "endpoint", endpoint, "region", region)
 
+	secrets := map[string]string{
+		keyEndpoint:        endpoint,
+		keyRegion:          region,
+		keyUris:            strings.Join(uris, ","),
+		keyAccessKeyID:     accessKey,
+		keyAccessSecretKey: secretKey,
+	}
+	// A CA privada da instância viaja no grant: o consumidor valida o endpoint
+	// só a partir do BucketInfo, sem CA montada no cluster.
+	if len(be.CACert) > 0 {
+		secrets[keyCACert] = string(be.CACert)
+	}
 	return &cosi.DriverGrantBucketAccessResponse{
-		AccountId: accessKey,
-		Credentials: map[string]*cosi.CredentialDetails{
-			s3Key: {Secrets: map[string]string{
-				keyEndpoint:        endpoint,
-				keyRegion:          region,
-				keyUris:            strings.Join(uris, ","),
-				keyAccessKeyID:     accessKey,
-				keyAccessSecretKey: secretKey,
-			}},
-		},
+		AccountId:   accessKey,
+		Credentials: map[string]*cosi.CredentialDetails{s3Key: {Secrets: secrets}},
 	}, nil
 }
 

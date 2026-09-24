@@ -491,6 +491,24 @@ func (r *reconciler) deriveInstanceConn(ctx context.Context, inst *unstructured.
 	if host, _, _ := unstructured.NestedString(inst.Object, "spec", "expose", "host"); host != "" {
 		data["externalEndpoint"] = []byte("https://" + host)
 	}
+	// The instance's private CA, if it declares one: spec.caSecretName is the
+	// root trust anchor — exposure-agnostic (ingress, gateway, or none), the
+	// same CA the operator mounts into the server certs-dir. It rides in the
+	// connection secret so the derivation is self-sufficient: the driver and
+	// every consumer validate the endpoint per instance, with no cluster-wide
+	// CA. "se existir": no caSecretName, or an empty ca.crt, is skipped (a
+	// public cert needs none). We read the root, not spec.oidc.caSecretName —
+	// that one is the IdP's CA, which only coincides with the endpoint's.
+	if caName, _, _ := unstructured.NestedString(inst.Object, "spec", "caSecretName"); caName != "" {
+		if caSec, err := r.k8s.CoreV1().Secrets(ns).Get(ctx, caName, metav1.GetOptions{}); err == nil {
+			if ca := caSec.Data["ca.crt"]; len(ca) > 0 {
+				data["ca.crt"] = ca
+			}
+		} else if !apierrors.IsNotFound(err) {
+			klog.V(2).InfoS("caSecretName unreadable; connection without ca.crt",
+				"instance", ns+"/"+name, "secret", caName, "err", err)
+		}
+	}
 	return &connSecret{
 		name:   "minio-" + name + "-conn",
 		data:   data,

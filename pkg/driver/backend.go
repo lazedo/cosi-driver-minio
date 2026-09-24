@@ -22,6 +22,11 @@ type Backend struct {
 	// access class sets advertiseEndpoint=external advertise it instead of
 	// S3Endpoint — for consumers that presign URLs off-cluster clients fetch.
 	ExternalEndpoint string
+	// CACert is the PEM CA that signs the instance's TLS endpoint, when it is
+	// a private CA (from the connection secret's ca.crt). It rides into the
+	// grant's BucketInfo so a consumer is self-sufficient: it validates the
+	// endpoint from the BucketInfo alone, no cluster-wide CA to mount.
+	CACert []byte
 }
 
 // NOTA de desenho: já aqui viveu um Prefix de tenancy aplicado pelo driver.
