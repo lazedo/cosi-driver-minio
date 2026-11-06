@@ -13,6 +13,17 @@
 #   kz-eu  capi-navigator/kz-eu/apps-publish.sh -- copia daqui para apps/ e
 #          publica no kz-chartrepo, do mesmo modo que gera qubicle-provision.yaml
 #          a partir do repo do kazoo.
+#   klab   klab-git clusters/management/operators-oci/minio-cosi-driver.yaml --
+#          Flux OCIRepository on the artifact CI publishes per commit
+#          (manifests.yml: this file, image tag set to that commit), applied
+#          with targetNamespace cosi-system. A release there is a tag bump in
+#          klab-git.
+#
+# kind-west still runs the driver WITH the static backend: the static class
+# minio-cosi holds two buckets (media-capture, cosi-monster-ui-apps) whose
+# BucketIds carry no conn=. This file has no static backend, so the west install
+# script must not run until those buckets are migrated (deploy/migrate-bucket.sh).
+# Until then west is bumped with `kubectl set image`.
 #
 # Pré-requisito por cluster (não está aqui porque é segredo e é local): o secret
 # cosi-minio-admin no ns cosi-minio (cosi-minio-admin-secret.sh) e o lazedo-ghcr.
@@ -111,8 +122,8 @@ spec:
           # As tags à mão que aqui estavam antes (0.2.1-lazedo2, v0.2.2-lazedo1)
           # foram apagadas do GHCR e só sobreviviam em cache do nó -- o pod
           # corria, mas qualquer reagendamento dava ImagePullBackOff.
-          # lazedo/cosi-driver-minio@f4617a2
-          image: ghcr.io/lazedo/minio-cosi-driver:ff0b641
+          # lazedo/cosi-driver-minio@42300ee
+          image: ghcr.io/lazedo/minio-cosi-driver:42300ee
           # SEM backend estático: o provisioner resolve tudo por connection
           # secret (o discover cria-os por instância, cada um com o seu ca.crt).
           # Cai o --s3-endpoint/--minio-admin-endpoint/--ca-file global e o
@@ -138,7 +149,7 @@ spec:
         # usada -- portanto um bucket ja criado continua a resolver para o mesmo
         # destino mesmo que a classe mude depois.
         - name: discover
-          image: ghcr.io/lazedo/minio-cosi-driver:ff0b641
+          image: ghcr.io/lazedo/minio-cosi-driver:42300ee
           args:
             - discover
             # Tem de ser igual ao --provisioner do contentor driver: e o
