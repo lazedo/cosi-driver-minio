@@ -37,9 +37,10 @@
 // full reconcile: cluster-scoped classes cannot ownerRef a namespaced secret.
 //
 // The loop is a periodic full LIST+reconcile (default 30s): simple and robust
-// beats clever. Updates always re-GET the object inside RetryOnConflict —
-// never Update from a cached copy (this codebase family had a stale-object
-// wedge bug).
+// beats clever. Every LIST is served from the apiserver's watch cache, not
+// etcd (see fromWatchCache). Updates always re-GET the object inside
+// RetryOnConflict — never Update from a cached copy (this codebase family had
+// a stale-object wedge bug).
 package discover
 
 import (
@@ -209,6 +210,21 @@ func Run(ctx context.Context, opts Options) error {
 	}
 }
 
+// fromWatchCache is the ListOptions of every LIST this reconciler makes.
+//
+// resourceVersion "0" lets the apiserver answer from its watch cache. Without
+// it the LIST asks for the latest state, and before ConsistentListFromCache
+// (beta in Kubernetes 1.31) the apiserver reads that from etcd: every object
+// under the prefix, with the label selector applied only afterwards. For the
+// cluster-wide secret LISTs that meant every Secret in the cluster (mostly
+// helm releases, megabytes), twice per tick. The cache may lag etcd by a
+// moment; a periodic full reconcile tolerates that, since the next tick sees
+// what this one missed. The cache answers in key order, like etcd, so "first
+// one wins" on a name collision still picks the same winner.
+func fromWatchCache(labelSelector string) metav1.ListOptions {
+	return metav1.ListOptions{LabelSelector: labelSelector, ResourceVersion: "0"}
+}
+
 // buildConfig prefers in-cluster config, falling back to the default
 // kubeconfig chain for out-of-cluster development runs.
 func buildConfig() (*rest.Config, error) {
@@ -332,15 +348,13 @@ func classNameForSecret(secretName string) string {
 // secondary cosi.lazedo.dev/connection=minio selector — and maps each to a
 // `bind-<name>` class pair.
 func (r *reconciler) desiredFromSecrets(ctx context.Context) (map[string]source, error) {
-	broker, err := r.k8s.CoreV1().Secrets(metav1.NamespaceAll).List(ctx, metav1.ListOptions{
-		LabelSelector: LabelBrokerConnection + "=" + brokerConnectionTrue,
-	})
+	broker, err := r.k8s.CoreV1().Secrets(metav1.NamespaceAll).List(ctx,
+		fromWatchCache(LabelBrokerConnection+"="+brokerConnectionTrue))
 	if err != nil {
 		return nil, fmt.Errorf("listing broker connection secrets: %w", err)
 	}
-	legacy, err := r.k8s.CoreV1().Secrets(metav1.NamespaceAll).List(ctx, metav1.ListOptions{
-		LabelSelector: LabelConnection + "=" + ConnectionMinio,
-	})
+	legacy, err := r.k8s.CoreV1().Secrets(metav1.NamespaceAll).List(ctx,
+		fromWatchCache(LabelConnection+"="+ConnectionMinio))
 	if err != nil {
 		return nil, fmt.Errorf("listing connection secrets: %w", err)
 	}
@@ -401,7 +415,7 @@ func (r *reconciler) desiredFromSecrets(ctx context.Context) (map[string]source,
 //     skipped (its endpoint would be broken); an instance that was already
 //     delivered keeps its classes through transient unreadiness.
 func (r *reconciler) instanceSources(ctx context.Context) ([]connSecret, map[string]source, error) {
-	instances, err := r.dyn.Resource(minioGVR).Namespace(metav1.NamespaceAll).List(ctx, metav1.ListOptions{})
+	instances, err := r.dyn.Resource(minioGVR).Namespace(metav1.NamespaceAll).List(ctx, fromWatchCache(""))
 	if err != nil {
 		// Flag on without the house minio-operator installed: supported
 		// steady state — log once, keep reconciling other sources, and
@@ -583,7 +597,7 @@ func (r *reconciler) reconcileConnSecrets(ctx context.Context, conns []connSecre
 	}
 
 	// GC: managed synthesized secrets whose instance disappeared.
-	list, err := secrets.List(ctx, metav1.ListOptions{LabelSelector: LabelManagedBy + "=" + ManagedByValue})
+	list, err := secrets.List(ctx, fromWatchCache(LabelManagedBy+"="+ManagedByValue))
 	if err != nil {
 		errs = append(errs, fmt.Errorf("listing managed secrets: %w", err))
 	} else {
@@ -777,7 +791,7 @@ func (r *reconciler) ensureBucketAccessClass(ctx context.Context, name string, s
 // gc deletes managed classes whose source disappeared. Only classes labeled
 // LabelManagedBy=ManagedByValue are candidates — static classes are safe.
 func (r *reconciler) gc(ctx context.Context, desired map[string]source) error {
-	sel := metav1.ListOptions{LabelSelector: LabelManagedBy + "=" + ManagedByValue}
+	sel := fromWatchCache(LabelManagedBy + "=" + ManagedByValue)
 	var errs []error
 
 	bcs, err := r.cosi.ObjectstorageV1alpha1().BucketClasses().List(ctx, sel)
